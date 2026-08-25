@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini AIPR Atlas</title>
+    <style>
+        html, body {
+            margin: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #ffffff;
+        }
+        #gemini-atlas-svg {
+            width: 100%;
+            height: 100%;
+            display: block;
+            background-color: #ffffff;
+        }
+    </style>
+</head>
+<body>
+<object id="gemini-atlas-svg" type="image/svg+xml" data="gemini.atlas.svg">
+    Your browser does not support SVGs
+</object>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<script>
+    var svgObject = document.getElementById('gemini-atlas-svg');
+    var panZoomInstance = null;
+
+    var CONFIGURED_MAX_ZOOM = 20;
+    var NODE_ZOOM_LEVEL = 3;
+
+    function alignTop() {
+        if (!panZoomInstance) return;
+        var sizes = panZoomInstance.getSizes();
+        var contentHeight = sizes.viewBox.height * sizes.realZoom;
+        var offsetY = (sizes.height - contentHeight) / 2;
+        if (offsetY > 0) {
+            var currentPan = panZoomInstance.getPan();
+            panZoomInstance.pan({ x: currentPan.x, y: currentPan.y - offsetY });
+        }
+    }
+
+    function getGlobalBBox(el, svgRoot) {
+        var bbox = el.getBBox();
+        var ctm = el.getCTM();
+
+        if (!ctm) {
+            return bbox;
+        }
+
+        var corners = [
+            svgRoot.createSVGPoint(),
+            svgRoot.createSVGPoint(),
+            svgRoot.createSVGPoint(),
+            svgRoot.createSVGPoint()
+        ];
+        corners[0].x = bbox.x;               corners[0].y = bbox.y;
+        corners[1].x = bbox.x + bbox.width;  corners[1].y = bbox.y;
+        corners[2].x = bbox.x + bbox.width;  corners[2].y = bbox.y + bbox.height;
+        corners[3].x = bbox.x;               corners[3].y = bbox.y + bbox.height;
+
+        var transformed = corners.map(function(pt) { return pt.matrixTransform(ctm); });
+        var xs = transformed.map(function(p) { return p.x; });
+        var ys = transformed.map(function(p) { return p.y; });
+
+        var minX = Math.min.apply(null, xs);
+        var maxX = Math.max.apply(null, xs);
+        var minY = Math.min.apply(null, ys);
+        var maxY = Math.max.apply(null, ys);
+
+        return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+    }
+
+    function goToNode(nodeId) {
+        var svgDoc = svgObject.contentDocument;
+        if (!svgDoc) return;
+
+        var target = svgDoc.getElementById(nodeId);
+        if (!target) return;
+
+        var svgRoot = svgDoc.documentElement;
+        var bbox = getGlobalBBox(target, svgRoot);
+
+        var cx = bbox.x + bbox.width / 2;
+        var cy = bbox.y + bbox.height / 2;
+
+        var zoom = Math.min(NODE_ZOOM_LEVEL, CONFIGURED_MAX_ZOOM);
+        panZoomInstance.zoom(zoom);
+
+        var newSizes = panZoomInstance.getSizes();
+        var panX = newSizes.width / 2 - cx * newSizes.realZoom;
+        var panY = newSizes.height / 2 - cy * newSizes.realZoom;
+
+        panZoomInstance.pan({ x: panX, y: panY });
+
+        highlightNode(target);
+    }
+
+    function highlightNode(target) {
+        var original = target.getAttribute('stroke');
+        var originalWidth = target.getAttribute('stroke-width');
+
+        target.setAttribute('stroke', '#FFD700');
+        target.setAttribute('stroke-width', '4');
+
+        setTimeout(function() {
+            if (original !== null) {
+                target.setAttribute('stroke', original);
+            } else {
+                target.removeAttribute('stroke');
+            }
+            if (originalWidth !== null) {
+                target.setAttribute('stroke-width', originalWidth);
+            } else {
+                target.removeAttribute('stroke-width');
+            }
+        }, 2500);
+    }
+
+    function initPanZoom() {
+        panZoomInstance = svgPanZoom(svgObject, {
+            zoomEnabled: true,
+            controlIconsEnabled: true,
+            fit: true,
+            center: true,
+            minZoom: 0.5,
+            maxZoom: CONFIGURED_MAX_ZOOM
+        });
+
+        var hash = window.location.hash.replace('#', '');
+        if (hash) {
+            setTimeout(function() {
+                goToNode(hash);
+            }, 100);
+        } else {
+            alignTop();
+        }
+    }
+
+    svgObject.addEventListener('load', initPanZoom);
+
+    window.addEventListener('resize', function() {
+        if (!panZoomInstance) return;
+        panZoomInstance.resize();
+        panZoomInstance.fit();
+        panZoomInstance.center();
+        alignTop();
+    });
+
+    window.addEventListener('hashchange', function() {
+        var hash = window.location.hash.replace('#', '');
+        if (hash) goToNode(hash);
+    });
+</script>
+</body>
+</html>
