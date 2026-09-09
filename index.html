@@ -1,159 +1,331 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gemini AIPR Atlas</title>
-    <style>
-        html, body {
-            margin: 0;
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            background-color: #ffffff;
-        }
-        #gemini-atlas-svg {
-            width: 100%;
-            height: 100%;
-            display: block;
-            background-color: #ffffff;
-        }
-    </style>
+  <meta charset="UTF-8">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, viewport-fit=cover"
+  >
+
+  <title>Gemini Atlas</title>
+
+  <style>
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      overscroll-behavior: none;
+      background: #ffffff;
+    }
+
+    body {
+      position: fixed;
+      inset: 0;
+    }
+
+    #gemini-atlas-svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+  </style>
 </head>
+
 <body>
-<object id="gemini-atlas-svg" type="image/svg+xml" data="gemini.atlas.svg">
-    Your browser does not support SVGs
-</object>
-<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
-<script>
-    var svgObject = document.getElementById('gemini-atlas-svg');
-    var panZoomInstance = null;
+  <object
+    id="gemini-atlas-svg"
+    type="image/svg+xml"
+    data="gemini.atlas.svg"
+    aria-label="Gemini Atlas"
+  >
+    Your browser does not support SVG files.
+  </object>
 
-    var CONFIGURED_MAX_ZOOM = 20;
-    var NODE_ZOOM_LEVEL = 3;
+  <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
 
-    function alignTop() {
-        if (!panZoomInstance) return;
-        var sizes = panZoomInstance.getSizes();
-        var contentHeight = sizes.viewBox.height * sizes.realZoom;
-        var offsetY = (sizes.height - contentHeight) / 2;
-        if (offsetY > 0) {
-            var currentPan = panZoomInstance.getPan();
-            panZoomInstance.pan({ x: currentPan.x, y: currentPan.y - offsetY });
+  <script>
+    (function () {
+      "use strict";
+
+      var svgObject = document.getElementById("gemini-atlas-svg");
+      var panZoomInstance = null;
+      var resizeTimer = null;
+      var currentMode = null;
+      var lastViewportWidth = window.innerWidth;
+
+      var OPENING_VIEWS = {
+        /*
+         * Desktop remains unchanged.
+         */
+        desktop: {
+          zoom: 3.0,
+          panX: 0.26,
+          panY: 0.86
+        },
+
+        /*
+         * Mobile:
+         * Centers Decision Narrative and removes
+         * the exposed white space above the SVG.
+         */
+        mobile: {
+          zoom: 5.6,
+          panX: 0.78,
+          panY: 0.58
         }
-    }
+      };
 
-    function getGlobalBBox(el, svgRoot) {
-        var bbox = el.getBBox();
-        var ctm = el.getCTM();
+      function getLayoutMode() {
+        var narrowScreen = window.innerWidth <= 768;
 
-        if (!ctm) {
-            return bbox;
+        var coarsePointer =
+          window.matchMedia &&
+          window.matchMedia("(pointer: coarse)").matches;
+
+        var mobileSizedTouchscreen =
+          coarsePointer &&
+          Math.min(window.innerWidth, window.innerHeight) <= 900;
+
+        return narrowScreen || mobileSizedTouchscreen
+          ? "mobile"
+          : "desktop";
+      }
+
+      function prepareEmbeddedSvg() {
+        if (
+          !svgObject.contentDocument ||
+          !svgObject.contentDocument.documentElement
+        ) {
+          return;
         }
 
-        var corners = [
-            svgRoot.createSVGPoint(),
-            svgRoot.createSVGPoint(),
-            svgRoot.createSVGPoint(),
-            svgRoot.createSVGPoint()
-        ];
-        corners[0].x = bbox.x;               corners[0].y = bbox.y;
-        corners[1].x = bbox.x + bbox.width;  corners[1].y = bbox.y;
-        corners[2].x = bbox.x + bbox.width;  corners[2].y = bbox.y + bbox.height;
-        corners[3].x = bbox.x;               corners[3].y = bbox.y + bbox.height;
+        var svgRoot = svgObject.contentDocument.documentElement;
 
-        var transformed = corners.map(function(pt) { return pt.matrixTransform(ctm); });
-        var xs = transformed.map(function(p) { return p.x; });
-        var ys = transformed.map(function(p) { return p.y; });
+        svgRoot.style.touchAction = "none";
+        svgRoot.style.overscrollBehavior = "none";
+        svgRoot.style.userSelect = "none";
+        svgRoot.style.webkitUserSelect = "none";
+      }
 
-        var minX = Math.min.apply(null, xs);
-        var maxX = Math.max.apply(null, xs);
-        var minY = Math.min.apply(null, ys);
-        var maxY = Math.max.apply(null, ys);
+      function createMobileEventsHandler() {
+        return {
+          haltEventListeners: [
+            "touchstart",
+            "touchend",
+            "touchmove",
+            "touchleave",
+            "touchcancel"
+          ],
 
-        return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
-    }
+          init: function (options) {
+            var instance = options.instance;
+            var initialScale = 1;
+            var previousDeltaX = 0;
+            var previousDeltaY = 0;
 
-    function goToNode(nodeId) {
-        var svgDoc = svgObject.contentDocument;
-        if (!svgDoc) return;
+            this.hammer = new Hammer.Manager(options.svgElement, {
+              touchAction: "none"
+            });
 
-        var target = svgDoc.getElementById(nodeId);
-        if (!target) return;
+            var panRecognizer = new Hammer.Pan({
+              threshold: 0,
+              pointers: 0
+            });
 
-        var svgRoot = svgDoc.documentElement;
-        var bbox = getGlobalBBox(target, svgRoot);
+            var pinchRecognizer = new Hammer.Pinch({
+              threshold: 0
+            });
 
-        var cx = bbox.x + bbox.width / 2;
-        var cy = bbox.y + bbox.height / 2;
+            pinchRecognizer.recognizeWith(panRecognizer);
 
-        var zoom = Math.min(NODE_ZOOM_LEVEL, CONFIGURED_MAX_ZOOM);
-        panZoomInstance.zoom(zoom);
+            this.hammer.add([
+              panRecognizer,
+              pinchRecognizer
+            ]);
 
-        var newSizes = panZoomInstance.getSizes();
-        var panX = newSizes.width / 2 - cx * newSizes.realZoom;
-        var panY = newSizes.height / 2 - cy * newSizes.realZoom;
+            this.hammer.on("panstart", function (event) {
+              previousDeltaX = 0;
+              previousDeltaY = 0;
 
-        panZoomInstance.pan({ x: panX, y: panY });
+              if (event.srcEvent) {
+                event.srcEvent.preventDefault();
+              }
+            });
 
-        highlightNode(target);
-    }
+            this.hammer.on("panmove", function (event) {
+              instance.panBy({
+                x: event.deltaX - previousDeltaX,
+                y: event.deltaY - previousDeltaY
+              });
 
-    function highlightNode(target) {
-        var original = target.getAttribute('stroke');
-        var originalWidth = target.getAttribute('stroke-width');
+              previousDeltaX = event.deltaX;
+              previousDeltaY = event.deltaY;
 
-        target.setAttribute('stroke', '#FFD700');
-        target.setAttribute('stroke-width', '4');
+              if (event.srcEvent) {
+                event.srcEvent.preventDefault();
+              }
+            });
 
-        setTimeout(function() {
-            if (original !== null) {
-                target.setAttribute('stroke', original);
-            } else {
-                target.removeAttribute('stroke');
+            this.hammer.on("pinchstart", function (event) {
+              initialScale = instance.getZoom();
+
+              if (event.srcEvent) {
+                event.srcEvent.preventDefault();
+              }
+            });
+
+            this.hammer.on("pinchmove", function (event) {
+              instance.zoomAtPoint(
+                initialScale * event.scale,
+                {
+                  x: event.center.x,
+                  y: event.center.y
+                }
+              );
+
+              if (event.srcEvent) {
+                event.srcEvent.preventDefault();
+              }
+            });
+          },
+
+          destroy: function () {
+            if (this.hammer) {
+              this.hammer.destroy();
+              this.hammer = null;
             }
-            if (originalWidth !== null) {
-                target.setAttribute('stroke-width', originalWidth);
-            } else {
-                target.removeAttribute('stroke-width');
-            }
-        }, 2500);
-    }
+          }
+        };
+      }
 
-    function initPanZoom() {
-        panZoomInstance = svgPanZoom(svgObject, {
-            zoomEnabled: true,
-            controlIconsEnabled: true,
-            fit: true,
-            center: true,
-            minZoom: 0.5,
-            maxZoom: CONFIGURED_MAX_ZOOM
-        });
-
-        var hash = window.location.hash.replace('#', '');
-        if (hash) {
-            setTimeout(function() {
-                goToNode(hash);
-            }, 100);
-        } else {
-            alignTop();
+      function applyOpeningView() {
+        if (!panZoomInstance) {
+          return;
         }
-    }
 
-    svgObject.addEventListener('load', initPanZoom);
+        currentMode = getLayoutMode();
+        lastViewportWidth = window.innerWidth;
 
-    window.addEventListener('resize', function() {
-        if (!panZoomInstance) return;
+        var view = OPENING_VIEWS[currentMode];
+
         panZoomInstance.resize();
         panZoomInstance.fit();
         panZoomInstance.center();
-        alignTop();
-    });
+        panZoomInstance.zoom(view.zoom);
 
-    window.addEventListener('hashchange', function() {
-        var hash = window.location.hash.replace('#', '');
-        if (hash) goToNode(hash);
-    });
-</script>
+        var sizes = panZoomInstance.getSizes();
+
+        panZoomInstance.panBy({
+          x: sizes.width * view.panX,
+          y: sizes.height * view.panY
+        });
+      }
+
+      function initializeGeminiAtlas() {
+        if (panZoomInstance) {
+          return;
+        }
+
+        prepareEmbeddedSvg();
+
+        currentMode = getLayoutMode();
+        lastViewportWidth = window.innerWidth;
+
+        var isMobile = currentMode === "mobile";
+
+        var options = {
+          panEnabled: true,
+          zoomEnabled: true,
+          controlIconsEnabled: true,
+          dblClickZoomEnabled: !isMobile,
+          mouseWheelZoomEnabled: true,
+          preventMouseEventsDefault: true,
+          zoomScaleSensitivity: isMobile ? 0.25 : 0.20,
+          fit: true,
+          center: true,
+          contain: false,
+          minZoom: 0.5,
+          maxZoom: 20,
+          refreshRate: "auto"
+        };
+
+        if (isMobile && window.Hammer) {
+          options.customEventsHandler =
+            createMobileEventsHandler();
+        }
+
+        panZoomInstance = svgPanZoom(
+          svgObject,
+          options
+        );
+
+        window.requestAnimationFrame(function () {
+          window.requestAnimationFrame(
+            applyOpeningView
+          );
+        });
+      }
+
+      function handleViewportResize() {
+        window.clearTimeout(resizeTimer);
+
+        resizeTimer = window.setTimeout(function () {
+          if (!panZoomInstance) {
+            return;
+          }
+
+          var newMode = getLayoutMode();
+          var newWidth = window.innerWidth;
+
+          var modeChanged =
+            newMode !== currentMode;
+
+          var substantialWidthChange =
+            Math.abs(
+              newWidth - lastViewportWidth
+            ) > 80;
+
+          /*
+           * Height-only changes from Chrome's address bar
+           * will resize the surface without resetting the view.
+           */
+          panZoomInstance.resize();
+
+          if (
+            modeChanged ||
+            substantialWidthChange
+          ) {
+            applyOpeningView();
+          }
+        }, 160);
+      }
+
+      svgObject.addEventListener(
+        "load",
+        initializeGeminiAtlas
+      );
+
+      if (
+        svgObject.contentDocument &&
+        svgObject.contentDocument.documentElement
+      ) {
+        initializeGeminiAtlas();
+      }
+
+      window.addEventListener(
+        "resize",
+        handleViewportResize,
+        { passive: true }
+      );
+    })();
+  </script>
 </body>
 </html>
